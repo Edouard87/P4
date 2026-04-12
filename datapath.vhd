@@ -11,11 +11,11 @@ use work.alu_ctrl_pkg.all;
 
 entity datapath is
     generic (
-        MEM_SIZE : integer := 32768   -- bytes, must match memory.vhd generic
+        MEM_SIZE : integer := 32768   -- No touchie. Will break things.
     );
     port (
         clk   : in std_logic;
-        reset : in std_logic
+        reset : in std_logic -- Reset signal for datapath. Active high.
     );
 end entity datapath;
 
@@ -26,16 +26,16 @@ architecture rtl of datapath is
     component memory is
         generic (
             ram_size     : integer := 32768;
-            mem_delay    : time    := 10 ns;
+            mem_delay    : time    := 3 ns; -- For testing purposes, we set the memory delay to be short.
             clock_period : time    := 1 ns
         );
         port (
             clock       : in  std_logic;
-            writedata   : in  std_logic_vector(7 downto 0);
+            writedata   : in  std_logic_vector(31 downto 0);
             address     : in  integer range 0 to 32767;
             memwrite    : in  std_logic;
             memread     : in  std_logic;
-            readdata    : out std_logic_vector(7 downto 0);
+            readdata    : out std_logic_vector(31 downto 0);
             waitrequest : out std_logic
         );
     end component;
@@ -106,14 +106,18 @@ architecture rtl of datapath is
     constant NOP_INSTR : std_logic_vector(31 downto 0) := x"00000013";
 
     -- IF stage signals
-    signal pc_reg        : unsigned(31 downto 0) := (others => '0');
+    signal pc_reg        : unsigned(31 downto 0) := (others => '0'); -- Current PC.
     signal pc_next       : unsigned(31 downto 0);
     signal pc_plus4      : unsigned(31 downto 0);
+
+    signal imem_waitrequest : std_logic; -- Gets set to zero and back to one after a successful memory transaction.
+    signal imem_read : std_logic := '0'; -- Set high to start an IF read, then deasserted while memory is busy.
 
     -- Instruction memory wiring (byte-wide, word-aligned access across 4 ports)
     -- We instantiate 4 memory bytes and assemble a 32-bit word.
     signal imem_addr     : integer range 0 to MEM_SIZE-1;
-    signal imem_rd0, imem_rd1, imem_rd2, imem_rd3 : std_logic_vector(7 downto 0);
+    signal imem_rd        : std_logic_vector(31 downto 0); -- Full content of insurction memory at
+                                                           -- consecutive memory addresses for a given address.
     signal if_instruction : std_logic_vector(31 downto 0);
 
     -- IF/ID pipeline register
@@ -145,9 +149,12 @@ architecture rtl of datapath is
     signal id_alu_ctrl   : std_logic_vector(3 downto 0);
 
     -- Hazard unit outputs
-    signal pc_write      : std_logic;
+    signal pc_write      : std_logic; -- WE on the PC process. Will prevent the PC from advancing if a hazard
+                                      -- is detected.
     signal if_id_write   : std_logic;
-    signal id_ex_flush   : std_logic;
+    signal id_ex_flush   : std_logic; -- Writeback has not completed and we need the value before we can
+                                      -- read from the register file. A NOP should be inserted if this is
+                                      -- set to high.
 
     -- ID/EX pipeline register
 
@@ -214,7 +221,7 @@ architecture rtl of datapath is
     -- MEM stage signals
     -- Data memory wiring (byte-wide, word-aligned)
     signal dmem_addr     : integer range 0 to MEM_SIZE-1;
-    signal dmem_wr0, dmem_wr1, dmem_wr2, dmem_wr3 : std_logic_vector(7 downto 0);
+    signal dmem_wr0, dmem_wr1, dmem_wr2, dmem_wr3 : std_logic_vector(7 downto 0); -- TODO
     signal dmem_rd0, dmem_rd1, dmem_rd2, dmem_rd3 : std_logic_vector(7 downto 0);
     signal mem_read_data : std_logic_vector(31 downto 0);
 
@@ -233,79 +240,49 @@ begin
 
     -- Instruction Memory (4 x 8-bit banks → 32-bit word)
     -- Byte address of instruction = pc_reg. Word address = pc_reg >> 2.
+    -- Memory goes to 32768 B. As such, we need 15 bits to span the address space.
+    -- The rest of the memory address bits are ignored.
     imem_addr <= to_integer(pc_reg(14 downto 0));  -- byte address, memory is byte indexed
 
-    IMEM_B0 : memory
-        generic map (ram_size => MEM_SIZE)
-        port map (
-            clock => clk, writedata => x"00", address => imem_addr,
-            memwrite => '0', memread => '1',
-            readdata => imem_rd0, waitrequest => open
-        );
-    IMEM_B1 : memory
-        generic map (ram_size => MEM_SIZE)
-        port map (
-            clock => clk, writedata => x"00", address => imem_addr + 1,
-            memwrite => '0', memread => '1',
-            readdata => imem_rd1, waitrequest => open
-        );
-    IMEM_B2 : memory
-        generic map (ram_size => MEM_SIZE)
-        port map (
-            clock => clk, writedata => x"00", address => imem_addr + 2,
-            memwrite => '0', memread => '1',
-            readdata => imem_rd2, waitrequest => open
-        );
-    IMEM_B3 : memory
-        generic map (ram_size => MEM_SIZE)
-        port map (
-            clock => clk, writedata => x"00", address => imem_addr + 3,
-            memwrite => '0', memread => '1',
-            readdata => imem_rd3, waitrequest => open
-        );
+    -- Memory returns 32-bit word here and assumes that the addresses are byte-aligned.
+    -- Memory is byte-addressible under the hood.
+    -- The smallest memory address is the least significant bit (little endian I think)
+    IMEM : memory
+    generic map (ram_size => MEM_SIZE)
+    port map (
+        clock => clk, writedata => x"00000000", address => imem_addr,
+        memwrite => '0', memread => imem_read,
+        readdata => if_instruction, waitrequest => imem_waitrequest -- Monitors the status of waitrequest.
+    );
 
-    -- Assemble 32-bit instruction (little-endian: byte 0 = bits [7:0])
-    if_instruction <= imem_rd3 & imem_rd2 & imem_rd1 & imem_rd0;
+    -- Process to deassert and reassert imem_read so that the
+    -- processor actually does the read. Otherwise, subsequent requests
+    -- won't affect waitrequest.
+    imem_read_proc : process(clk)
+    begin
+        if rising_edge(clk) then
+            if reset = '1' then
+                imem_read <= '1';
+            elsif imem_waitrequest = '0' then
+                -- When the transaction is done, set read to zero.
+                imem_read <= '0';
+            else
+                -- Set read back to one so we keep going.
+                imem_read <= '1';
+            end if;
+        end if;
+    end process imem_read_proc;
 
     -- Data Memory (4 x 8-bit banks → 32-bit word)
     dmem_addr <= to_integer(unsigned(exmem_alu_result(14 downto 0)));
 
-    dmem_wr0  <= exmem_rs2_data(7  downto 0);
-    dmem_wr1  <= exmem_rs2_data(15 downto 8);
-    dmem_wr2  <= exmem_rs2_data(23 downto 16);
-    dmem_wr3  <= exmem_rs2_data(31 downto 24);
-
-    DMEM_B0 : memory
+    DMEM : memory
         generic map (ram_size => MEM_SIZE)
         port map (
-            clock => clk, writedata => dmem_wr0, address => dmem_addr,
+            clock => clk, writedata => exmem_rs2_data, address => dmem_addr,
             memwrite => exmem_mem_write, memread => exmem_mem_read,
-            readdata => dmem_rd0, waitrequest => open
+            readdata => mem_read_data, waitrequest => open
         );
-    DMEM_B1 : memory
-        generic map (ram_size => MEM_SIZE)
-        port map (
-            clock => clk, writedata => dmem_wr1, address => dmem_addr + 1,
-            memwrite => exmem_mem_write, memread => exmem_mem_read,
-            readdata => dmem_rd1, waitrequest => open
-        );
-    DMEM_B2 : memory
-        generic map (ram_size => MEM_SIZE)
-        port map (
-            clock => clk, writedata => dmem_wr2, address => dmem_addr + 2,
-            memwrite => exmem_mem_write, memread => exmem_mem_read,
-            readdata => dmem_rd2, waitrequest => open
-        );
-    DMEM_B3 : memory
-        generic map (ram_size => MEM_SIZE)
-        port map (
-            clock => clk, writedata => dmem_wr3, address => dmem_addr + 3,
-            memwrite => exmem_mem_write, memread => exmem_mem_read,
-            readdata => dmem_rd3, waitrequest => open
-        );
-
-    -- Assemble 32-bit read data
-    mem_read_data <= dmem_rd3 & dmem_rd2 & dmem_rd1 & dmem_rd0;
 
     -- Register File
     id_rs1_addr <= ifid_instr(19 downto 15);
@@ -431,7 +408,9 @@ begin
         if rising_edge(clk) then
             if reset = '1' then
                 pc_reg <= (others => '0');
-            elsif pc_write = '1' then
+            elsif pc_write = '1' and imem_waitrequest = '0' then
+                -- Only increment PC when instruction has arrived from memory and
+                -- pc_write is enabled.
                 pc_reg <= pc_next;
             end if;
         end if;
@@ -446,7 +425,7 @@ begin
                 -- flush IF/ID to prevent wrong instructions from reaching ID)
                 ifid_instr <= NOP_INSTR;
                 ifid_pc4   <= (others => '0');
-            elsif if_id_write = '1' then
+            elsif if_id_write = '1' and imem_waitrequest = '0' then
                 ifid_instr <= if_instruction;
                 ifid_pc4   <= pc_plus4;
             end if;
@@ -480,7 +459,7 @@ begin
                 idex_use_pc_a  <= '0';
             else
                 idex_pc4       <= ifid_pc4;
-                idex_pc        <= pc_reg;   -- PC of the instruction being decoded
+                idex_pc        <= ifid_pc4 - 4;   -- Recover the decoded instruction's PC from IF/ID PC+4
                 idex_rs1_data  <= id_rs1_data;
                 idex_rs2_data  <= id_rs2_data;
                 idex_imm       <= id_imm;

@@ -1,4 +1,6 @@
---Adapted from Example 12-15 of Quartus Design and Synthesis handbook
+-- Adapted from Example 12-15 of Quartus Design and Synthesis handbook.
+-- Modified to otuput 32 bits of data on read (although it remains byte addressible under the hood).
+-- Assumes the read addresses are byte-aligned.
 LIBRARY ieee;
 USE ieee.std_logic_1164.all;
 USE ieee.numeric_std.all;
@@ -6,16 +8,16 @@ USE ieee.numeric_std.all;
 ENTITY memory IS
 	GENERIC(
 		ram_size : INTEGER := 32768;
-		mem_delay : time := 10 ns;
-		clock_period : time := 1 ns
+		mem_delay : time := 1 ns;
+		clock_period : time := 1 ns -- No touchie! (1 GHz)
 	);
 	PORT (
 		clock: IN STD_LOGIC;
-		writedata: IN STD_LOGIC_VECTOR (7 DOWNTO 0);
+		writedata: IN STD_LOGIC_VECTOR (31 DOWNTO 0);
 		address: IN INTEGER RANGE 0 TO ram_size-1;
 		memwrite: IN STD_LOGIC;
 		memread: IN STD_LOGIC;
-		readdata: OUT STD_LOGIC_VECTOR (7 DOWNTO 0);
+		readdata: OUT STD_LOGIC_VECTOR (31 DOWNTO 0);
 		waitrequest: OUT STD_LOGIC
 	);
 END memory;
@@ -30,7 +32,7 @@ BEGIN
 	--This is the main section of the SRAM model
 	mem_process: PROCESS (clock)
 	BEGIN
-		--This is a cheap trick to initialize the SRAM in simulation
+		--Using the cheap trick to initialize the SRAM in simulation
 		IF(now < 1 ps)THEN
 			For i in 0 to ram_size-1 LOOP
 				ram_block(i) <= (others => '0');
@@ -45,7 +47,10 @@ BEGIN
 		read_address_reg <= address;
 		END IF;
 	END PROCESS;
-	readdata <= ram_block(read_address_reg);
+	readdata <= ram_block(read_address_reg + 3) &
+				ram_block(read_address_reg + 2) &
+				ram_block(read_address_reg + 1) &
+				ram_block(read_address_reg);
 
 
 	--The waitrequest signal is used to vary response time in simulation
