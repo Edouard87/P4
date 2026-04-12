@@ -1,0 +1,24 @@
+# VHDL source backups and generated testbench templates
+*.vhd.bak
+*.vht
+*.vht.bak
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# ModelSim / QuestaSim
+work/
+transcript
+*.mpf
+*.mti
+*_info
+*_vmake
+
+# Quartus-generated database/output files
+*.qdb
+*.qpg
+*.qtl
+
+# Quartus workspace state
+*.qws
