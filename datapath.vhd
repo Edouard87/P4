@@ -213,6 +213,8 @@ architecture rtl of datapath is
     signal exmem_branch_taken : std_logic := '0';
     signal exmem_reg_write   : std_logic := '0';
     signal exmem_mem_read    : std_logic := '0';
+    signal exmem_mem_waitrequest : std_logic; -- Waitrequest signal from data memory unit indicating whether a transaction has
+                                              -- completed.
     signal exmem_mem_write   : std_logic := '0';
     signal exmem_wb_src      : std_logic_vector(1 downto 0) := "00";
     signal exmem_jump        : std_logic := '0';
@@ -223,7 +225,8 @@ architecture rtl of datapath is
     signal dmem_addr     : integer range 0 to MEM_SIZE-1;
     signal dmem_wr0, dmem_wr1, dmem_wr2, dmem_wr3 : std_logic_vector(7 downto 0); -- TODO
     signal dmem_rd0, dmem_rd1, dmem_rd2, dmem_rd3 : std_logic_vector(7 downto 0);
-    signal mem_read_data : std_logic_vector(31 downto 0);
+    signal mem_read_data : std_logic_vector(31 downto 0); -- Data returned from the data memory unit
+                                                          -- when set to read data.
 
     -- MEM/WB pipeline register
     signal memwb_mem_data  : std_logic_vector(31 downto 0) := (others => '0');
@@ -281,7 +284,7 @@ begin
         port map (
             clock => clk, writedata => exmem_rs2_data, address => dmem_addr,
             memwrite => exmem_mem_write, memread => exmem_mem_read,
-            readdata => mem_read_data, waitrequest => open
+            readdata => mem_read_data, waitrequest => exem_mem_waitrequest
         );
 
     -- Register File
@@ -529,7 +532,7 @@ begin
                 memwb_reg_write  <= '0';
                 memwb_wb_src     <= "00";
             else
-                memwb_mem_data   <= mem_read_data;
+                memwb_mem_data   <= mem_read_data; -- Data from the memory unit if applicable.
                 memwb_alu_result <= exmem_alu_result;
                 memwb_pc4        <= exmem_pc4;
                 memwb_rd         <= exmem_rd;
