@@ -31,7 +31,19 @@ add wave sim:/cpu_tb/dp/memwb_mem_data
 add wave sim:/cpu_tb/dp/memwb_reg_write 
 add wave sim:/cpu_tb/dp/dmem_addr
 add wave sim:/cpu_tb/dp/dmem_stall 
-add wave sim:/cpu_tb/dp/exmem_rs2_data 
+add wave sim:/cpu_tb/dp/exmem_rs2_data
+add wave sim:/cpu_tb/dp/memwb_rd
+add wave sim:/cpu_tb/dp/ex_operand_a 
+add wave sim:/cpu_tb/dp/ex_operand_b
+
+add wave sim:cpu_tb/dp/pc_write
+add wave sim:cpu_tb/dp/if_id_write
+add wave sim:cpu_tb/dp/id_ex_flush 
+
+add wave -divider RS2
+add wave sim:/cpu_tb/dp/id_rs2_data
+add wave sim:/cpu_tb/dp/idex_rs2_data
+add wave sim:/cpu_tb/dp/exmem_rs2_data
 
 add wave -divider IF
 add wave -hex sim:/cpu_tb/dp/pc_reg

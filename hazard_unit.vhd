@@ -5,13 +5,14 @@
 -- WB before the consuming instruction can enter EX.
 --
 -- Hazard sources tracked:
---   ID/EX  stage producer  (instruction in EX)  → WB is 2 cycles away
---   EX/MEM stage producer  (instruction in MEM) → WB is 1 cycle away
+--   ID/EX  stage producer  (instruction in EX)  -> WB is 2 cycles away
+--   EX/MEM stage producer  (instruction in MEM) -> WB is 1 cycle away
+--   MEM/WB stage producer
 --
 -- A stall is inserted by:
---   pc_write    = '0'  → freeze PC
---   if_id_write = '0'  → freeze IF/ID register
---   id_ex_flush = '1'  → inject NOP bubble into ID/EX
+--   pc_write    = '0'  -> freeze PC
+--   if_id_write = '0'  -> freeze IF/ID register
+--   id_ex_flush = '1'  -> inject NOP bubble into ID/EX
 --
 -- The stall condition is re-evaluated every cycle
 
@@ -27,6 +28,10 @@ entity hazard_unit is
         -- EX/MEM producer (instruction currently in MEM stage)
         exmem_reg_write : in  std_logic;
         exmem_rd        : in  std_logic_vector(4 downto 0);
+
+        -- MEM/WB producer (instruction currently in WB stage)
+        memwb_reg_write : in  std_logic;
+        memwb_rd        : in  std_logic_vector(4 downto 0);
 
         -- IF/ID consumer (instruction currently in ID stage)
         ifid_rs1        : in  std_logic_vector(4 downto 0);
@@ -44,6 +49,7 @@ begin
 
     process(idex_reg_write,  idex_rd,
             exmem_reg_write, exmem_rd,
+            memwb_reg_write, memwb_rd,
             ifid_rs1, ifid_rs2)
 
         -- True if prod_rd (a register being written) conflicts with either
@@ -60,13 +66,19 @@ begin
     begin
         hazard := false;
 
-        -- Instruction in EX writes rd → consumer in ID needs to wait 2 cycles
+        -- Instruction in EX writes rd -> consumer in ID needs to wait 2 cycles
         if idex_reg_write = '1' and conflicts(idex_rd, ifid_rs1, ifid_rs2) then
             hazard := true;
         end if;
 
-        -- Instruction in MEM writes rd → consumer in ID needs to wait 1 cycle
+        -- Instruction in MEM writes rd -> consumer in ID needs to wait 1 cycle
         if exmem_reg_write = '1' and conflicts(exmem_rd, ifid_rs1, ifid_rs2) then
+            hazard := true;
+        end if;
+
+        -- Instruction in WB writes rd on this cycle -> consumer in ID must wait
+        -- until the register file has been updated and the read data is stable.
+        if memwb_reg_write = '1' and conflicts(memwb_rd, ifid_rs1, ifid_rs2) then
             hazard := true;
         end if;
 

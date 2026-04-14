@@ -94,6 +94,8 @@ architecture rtl of datapath is
             idex_rd         : in  std_logic_vector(4 downto 0);
             exmem_reg_write : in  std_logic;
             exmem_rd        : in  std_logic_vector(4 downto 0);
+            memwb_reg_write : in  std_logic;
+            memwb_rd        : in  std_logic_vector(4 downto 0);
             ifid_rs1        : in  std_logic_vector(4 downto 0);
             ifid_rs2        : in  std_logic_vector(4 downto 0);
             pc_write        : out std_logic;
@@ -216,6 +218,7 @@ architecture rtl of datapath is
     signal exmem_mem_waitrequest : std_logic; -- Waitrequest signal from data memory unit indicating whether a transaction has
                                               -- completed.
     signal exmem_mem_write   : std_logic := '0';
+    signal dmem_read         : std_logic := '0'; -- Separate DMEM read request line; do not overwrite pipeline control.
     signal exmem_wb_src      : std_logic_vector(1 downto 0) := "00";
     signal exmem_jump        : std_logic := '0';
     signal exmem_pc_src      : std_logic := '0';
@@ -277,30 +280,15 @@ begin
         end if;
     end process imem_read_proc;
 
-    -- 
-    exmem_read_proc : process(clk)
-    begin
-        if rising_edge(clk) then
-            if reset = '1' then
-                exmem_mem_read <= '1';
-            elsif exmem_mem_waitrequest = '0' then
-                -- When the transaction is done, set read to zero.
-                exmem_mem_read <= '0';
-            else
-                -- Set read back to one so we keep going.
-                exmem_mem_read <= '1';
-            end if;
-        end if;
-    end process exmem_read_proc;
-
     -- Data Memory (4 x 8-bit banks → 32-bit word)
     dmem_addr <= to_integer(unsigned(exmem_alu_result(14 downto 0)));
+    dmem_read <= exmem_mem_read;
 
     DMEM : memory
         generic map (ram_size => MEM_SIZE)
         port map (
             clock => clk, writedata => exmem_rs2_data, address => dmem_addr,
-            memwrite => exmem_mem_write, memread => exmem_mem_read,
+            memwrite => exmem_mem_write, memread => dmem_read,
             readdata => mem_read_data, waitrequest => exmem_mem_waitrequest
         );
 
@@ -358,6 +346,8 @@ begin
             idex_rd         => idex_rd,
             exmem_reg_write => exmem_reg_write,
             exmem_rd        => exmem_rd,
+            memwb_reg_write => memwb_reg_write,
+            memwb_rd        => memwb_rd,
             ifid_rs1        => id_rs1_addr,
             ifid_rs2        => id_rs2_addr,
             pc_write        => pc_write,
@@ -434,9 +424,10 @@ begin
         if rising_edge(clk) then
             if reset = '1' then
                 pc_reg <= (others => '0');
-            elsif pc_write = '1' and imem_waitrequest = '0' and dmem_stall = '0' then
-                -- Only increment PC when instruction has arrived from memory and
-                -- pc_write is enabled and data memory is not stalling the pipe.
+            elsif pc_write = '1' and imem_read = '1' and imem_waitrequest = '0' and dmem_stall = '0' then
+                -- Only increment PC when an active instruction fetch completes;
+                -- otherwise we can replay the same returned word and skip the
+                -- next instruction while imem_waitrequest is still low.
                 pc_reg <= pc_next;
             end if;
         end if;
@@ -451,9 +442,9 @@ begin
                 -- flush IF/ID to prevent wrong instructions from reaching ID)
                 ifid_instr <= NOP_INSTR;
                 ifid_pc4   <= (others => '0');
-            elsif if_id_write = '1' and imem_waitrequest = '0' and dmem_stall = '0' then
-                -- Only increment the pc here if (a) there is no waitrequest on the instruction and (b)
-                -- there is no memory stall.
+            elsif if_id_write = '1' and imem_read = '1' and imem_waitrequest = '0' and dmem_stall = '0' then
+                -- Latch a fetched instruction only on the cycle that an active
+                -- instruction-memory request completes.
                 ifid_instr <= if_instruction;
                 ifid_pc4   <= pc_plus4;
             end if;
