@@ -16,11 +16,11 @@ ARCHITECTURE behaviour OF memory_tb IS
         );
         PORT (
             clock: IN STD_LOGIC;
-            writedata: IN STD_LOGIC_VECTOR (7 DOWNTO 0);
+            writedata: IN STD_LOGIC_VECTOR (31 DOWNTO 0);
             address: IN INTEGER RANGE 0 TO ram_size-1;
             memwrite: IN STD_LOGIC := '0';
             memread: IN STD_LOGIC := '0';
-            readdata: OUT STD_LOGIC_VECTOR (7 DOWNTO 0);
+            readdata: OUT STD_LOGIC_VECTOR (31 DOWNTO 0);
             waitrequest: OUT STD_LOGIC
         );
     END COMPONENT;
@@ -28,11 +28,11 @@ ARCHITECTURE behaviour OF memory_tb IS
     --all the input signals with initial values
     signal clk : std_logic := '0';
     constant clk_period : time := 1 ns;
-    signal writedata: std_logic_vector(7 downto 0);
+    signal writedata: std_logic_vector(31 downto 0);
     signal address: INTEGER RANGE 0 TO 32768-1;
     signal memwrite: STD_LOGIC := '0';
     signal memread: STD_LOGIC := '0';
-    signal readdata: STD_LOGIC_VECTOR (7 DOWNTO 0);
+    signal readdata: STD_LOGIC_VECTOR (31 DOWNTO 0);
     signal waitrequest: STD_LOGIC;
 
 BEGIN
@@ -62,21 +62,26 @@ BEGIN
     test_process : process
     BEGIN
         wait for clk_period;
-        address <= 14; 
-        writedata <= X"12";
+        address <= 8;
+        writedata <= X"12345678";
         memwrite <= '1';
-        
-        --waits are NOT synthesizable and should not be used in a hardware design
-        wait until rising_edge(waitrequest);
+
+        -- Hold memwrite while the 4-byte write transaction completes.
+        wait for 5 * clk_period;
         memwrite <= '0';
+
+        -- Read back the written word.
         memread <= '1';
-        wait until rising_edge(waitrequest);
-        assert readdata = x"12" report "write unsuccessful" severity error;
-        memread <= '0';
         wait for clk_period;
-        address <= 12;memread <= '1';
-        wait until rising_edge(waitrequest);
-        assert readdata = x"0c" report "write unsuccessful" severity error;
+        assert readdata = x"12345678" report "word write unsuccessful" severity error;
+        memread <= '0';
+
+        -- Read an overlapping aligned word to confirm byte ordering in memory.
+        wait for clk_period;
+        address <= 9;
+        memread <= '1';
+        wait for clk_period;
+        assert readdata = x"00123456" report "byte ordering incorrect" severity error;
         memread <= '0';
         wait;
 
