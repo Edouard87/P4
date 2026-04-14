@@ -276,6 +276,22 @@ begin
         end if;
     end process imem_read_proc;
 
+    -- 
+    exmem_read_proc : process(clk)
+    begin
+        if rising_edge(clk) then
+            if reset = '1' then
+                exmem_mem_read <= '1';
+            elsif exmem_mem_waitrequest = '0' then
+                -- When the transaction is done, set read to zero.
+                exmem_mem_read <= '0';
+            else
+                -- Set read back to one so we keep going.
+                exmem_mem_read <= '1';
+            end if;
+        end if;
+    end process exmem_read_proc;
+
     -- Data Memory (4 x 8-bit banks → 32-bit word)
     dmem_addr <= to_integer(unsigned(exmem_alu_result(14 downto 0)));
 
@@ -284,7 +300,7 @@ begin
         port map (
             clock => clk, writedata => exmem_rs2_data, address => dmem_addr,
             memwrite => exmem_mem_write, memread => exmem_mem_read,
-            readdata => mem_read_data, waitrequest => exem_mem_waitrequest
+            readdata => mem_read_data, waitrequest => exmem_mem_waitrequest
         );
 
     -- Register File
@@ -338,7 +354,7 @@ begin
             ifid_rs1        => id_rs1_addr,
             ifid_rs2        => id_rs2_addr,
             pc_write        => pc_write,
-            if_id_write     => if_id_write,
+            if_id_write     => if_id_write, -- Write operatons.
             id_ex_flush     => id_ex_flush
         );
 
@@ -411,9 +427,15 @@ begin
         if rising_edge(clk) then
             if reset = '1' then
                 pc_reg <= (others => '0');
-            elsif pc_write = '1' and imem_waitrequest = '0' then
+            elsif pc_write = '1' and imem_waitrequest = '0' and idex_mem_read = '0' then
                 -- Only increment PC when instruction has arrived from memory and
-                -- pc_write is enabled.
+                -- pc_write is enabled (so ho hazard) and we're not doing a read operation.
+                pc_reg <= pc_next;
+            elsif pc_write = '1' and idex_mem_read = '1' and exmem_mem_waitrequest = '0' then
+                -- If we are doing a read operation, stay here until the read operation is done.
+                pc_reg <= pc_next;
+            else
+                -- Only increment PC 
                 pc_reg <= pc_next;
             end if;
         end if;
@@ -470,8 +492,8 @@ begin
                 idex_rs2_addr  <= id_rs2_addr;
                 idex_rd        <= id_rd_addr;
                 idex_reg_write <= id_reg_write;
-                idex_mem_read  <= id_mem_read;
-                idex_mem_write <= id_mem_write;
+                idex_mem_read  <= id_mem_read; -- Read request
+                idex_mem_write <= id_mem_write; -- Read request
                 idex_branch    <= id_branch;
                 idex_jump      <= id_jump;
                 idex_is_jalr   <= id_is_jalr;
@@ -512,7 +534,7 @@ begin
                 exmem_branch_taken <= ex_branch_taken;
                 exmem_pc_src       <= ex_pc_src;
                 exmem_reg_write    <= idex_reg_write;
-                exmem_mem_read     <= idex_mem_read;
+                exmem_mem_read     <= idex_mem_read; -- This signal tells the processor it's a read.
                 exmem_mem_write    <= idex_mem_write;
                 exmem_wb_src       <= idex_wb_src;
                 exmem_jump         <= idex_jump;
@@ -533,7 +555,7 @@ begin
                 memwb_wb_src     <= "00";
             else
                 memwb_mem_data   <= mem_read_data; -- Data from the memory unit if applicable.
-                memwb_alu_result <= exmem_alu_result;
+                memwb_alu_result <= exmem_alu_result; -- Data from the ALU if applicable.
                 memwb_pc4        <= exmem_pc4;
                 memwb_rd         <= exmem_rd;
                 memwb_reg_write  <= exmem_reg_write;

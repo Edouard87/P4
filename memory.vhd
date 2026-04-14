@@ -28,6 +28,10 @@ ARCHITECTURE rtl OF memory IS
 	SIGNAL read_address_reg: INTEGER RANGE 0 to ram_size-1;
 	SIGNAL write_waitreq_reg: STD_LOGIC := '1';
 	SIGNAL read_waitreq_reg: STD_LOGIC := '1';
+	SIGNAL write_active: STD_LOGIC := '0';
+	SIGNAL write_base_addr_reg: INTEGER RANGE 0 to ram_size-1 := 0;
+	SIGNAL write_data_reg: STD_LOGIC_VECTOR(31 DOWNTO 0) := (others => '0');
+	SIGNAL write_byte_index: INTEGER RANGE 0 to 3 := 0;
 BEGIN
 	--This is the main section of the SRAM model
 	mem_process: PROCESS (clock)
@@ -41,10 +45,44 @@ BEGIN
 
 		--This is the actual synthesizable SRAM block
 		IF (clock'event AND clock = '1') THEN
-			IF (memwrite = '1') THEN
-				ram_block(address) <= writedata;
+			read_address_reg <= address;
+
+			IF (write_active = '0') THEN
+				IF (memwrite = '1') THEN
+					write_active <= '1';
+					write_base_addr_reg <= address;
+					write_data_reg <= writedata;
+					write_byte_index <= 0;
+					write_waitreq_reg <= '1';
+				END IF;
+			ELSE
+				case write_byte_index is
+					when 0 =>
+						ram_block(write_base_addr_reg) <= write_data_reg(7 downto 0);
+						write_byte_index <= 1;
+					when 1 =>
+						ram_block(write_base_addr_reg + 1) <= write_data_reg(15 downto 8);
+						write_byte_index <= 2;
+					when 2 =>
+						ram_block(write_base_addr_reg + 2) <= write_data_reg(23 downto 16);
+						write_byte_index <= 3;
+					when others =>
+						ram_block(write_base_addr_reg + 3) <= write_data_reg(31 downto 24);
+						write_active <= '0';
+						write_byte_index <= 0;
+						write_waitreq_reg <= '0';
+				end case;
 			END IF;
-		read_address_reg <= address;
+
+			IF (write_waitreq_reg = '0') THEN
+				write_waitreq_reg <= '1';
+			END IF;
+
+			IF (memread = '1') THEN
+				read_waitreq_reg <= '0';
+			ELSE
+				read_waitreq_reg <= '1';
+			END IF;
 		END IF;
 	END PROCESS;
 	readdata <= ram_block(read_address_reg + 3) &
@@ -55,20 +93,6 @@ BEGIN
 
 	--The waitrequest signal is used to vary response time in simulation
 	--Read and write should never happen at the same time.
-	waitreq_w_proc: PROCESS (memwrite)
-	BEGIN
-		IF(memwrite'event AND memwrite = '1')THEN
-			write_waitreq_reg <= '0' after mem_delay, '1' after mem_delay + clock_period;
-
-		END IF;
-	END PROCESS;
-
-	waitreq_r_proc: PROCESS (memread)
-	BEGIN
-		IF(memread'event AND memread = '1')THEN
-			read_waitreq_reg <= '0' after mem_delay, '1' after mem_delay + clock_period;
-		END IF;
-	END PROCESS;
 	waitrequest <= write_waitreq_reg and read_waitreq_reg;
 
 
