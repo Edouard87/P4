@@ -27,10 +27,11 @@ add wave sim:/cpu_tb/dp/imem_waitrequest
 add wave -divider Data
 add wave sim:/cpu_tb/dp/exmem_mem_waitrequest
 add wave sim:/cpu_tb/dp/mem_read_data 
-
 add wave sim:/cpu_tb/dp/memwb_mem_data
 add wave sim:/cpu_tb/dp/memwb_reg_write 
 add wave sim:/cpu_tb/dp/dmem_addr
+add wave sim:/cpu_tb/dp/dmem_stall 
+add wave sim:/cpu_tb/dp/exmem_rs2_data 
 
 add wave -divider IF
 add wave -hex sim:/cpu_tb/dp/pc_reg

@@ -26,7 +26,7 @@ architecture rtl of datapath is
     component memory is
         generic (
             ram_size     : integer := 32768;
-            mem_delay    : time    := 3 ns; -- For testing purposes, we set the memory delay to be short.
+            mem_delay    : time    := 1 ns; -- Pretend there is no mem delay.
             clock_period : time    := 1 ns
         );
         port (
@@ -219,6 +219,7 @@ architecture rtl of datapath is
     signal exmem_wb_src      : std_logic_vector(1 downto 0) := "00";
     signal exmem_jump        : std_logic := '0';
     signal exmem_pc_src      : std_logic := '0';
+    signal dmem_stall        : std_logic := '0'; -- Simply stalling on all forms of memory accesses.
 
     -- MEM stage signals
     -- Data memory wiring (byte-wide, word-aligned)
@@ -302,6 +303,12 @@ begin
             memwrite => exmem_mem_write, memread => exmem_mem_read,
             readdata => mem_read_data, waitrequest => exmem_mem_waitrequest
         );
+
+    -- Hold the pipeline while data memory is servicing a transaction.
+    -- Servicing a transaction when waitrequest is set to high.
+    -- OR we just consider the ideal scenario where there are
+    -- no memory stalls (we tried).
+    dmem_stall <= '0';
 
     -- Register File
     id_rs1_addr <= ifid_instr(19 downto 15);
@@ -427,15 +434,9 @@ begin
         if rising_edge(clk) then
             if reset = '1' then
                 pc_reg <= (others => '0');
-            elsif pc_write = '1' and imem_waitrequest = '0' and idex_mem_read = '0' then
+            elsif pc_write = '1' and imem_waitrequest = '0' and dmem_stall = '0' then
                 -- Only increment PC when instruction has arrived from memory and
-                -- pc_write is enabled (so ho hazard) and we're not doing a read operation.
-                pc_reg <= pc_next;
-            elsif pc_write = '1' and idex_mem_read = '1' and exmem_mem_waitrequest = '0' then
-                -- If we are doing a read operation, stay here until the read operation is done.
-                pc_reg <= pc_next;
-            else
-                -- Only increment PC 
+                -- pc_write is enabled and data memory is not stalling the pipe.
                 pc_reg <= pc_next;
             end if;
         end if;
@@ -450,7 +451,9 @@ begin
                 -- flush IF/ID to prevent wrong instructions from reaching ID)
                 ifid_instr <= NOP_INSTR;
                 ifid_pc4   <= (others => '0');
-            elsif if_id_write = '1' and imem_waitrequest = '0' then
+            elsif if_id_write = '1' and imem_waitrequest = '0' and dmem_stall = '0' then
+                -- Only increment the pc here if (a) there is no waitrequest on the instruction and (b)
+                -- there is no memory stall.
                 ifid_instr <= if_instruction;
                 ifid_pc4   <= pc_plus4;
             end if;
@@ -482,7 +485,7 @@ begin
                 idex_alu_ctrl  <= ALU_ADD;
                 idex_funct3    <= "000";
                 idex_use_pc_a  <= '0';
-            else
+            elsif dmem_stall = '0' then
                 idex_pc4       <= ifid_pc4;
                 idex_pc        <= ifid_pc4 - 4;   -- Recover the decoded instruction's PC from IF/ID PC+4
                 idex_rs1_data  <= id_rs1_data;
@@ -524,7 +527,7 @@ begin
                 exmem_mem_write    <= '0';
                 exmem_wb_src       <= "00";
                 exmem_jump         <= '0';
-            else
+            elsif dmem_stall = '0' then
                 exmem_pc4          <= idex_pc4;
                 exmem_branch_target<= ex_branch_target;
                 exmem_jump_target  <= ex_jump_target;
@@ -553,7 +556,7 @@ begin
                 memwb_rd         <= (others => '0');
                 memwb_reg_write  <= '0';
                 memwb_wb_src     <= "00";
-            else
+            elsif dmem_stall = '0' then
                 memwb_mem_data   <= mem_read_data; -- Data from the memory unit if applicable.
                 memwb_alu_result <= exmem_alu_result; -- Data from the ALU if applicable.
                 memwb_pc4        <= exmem_pc4;
