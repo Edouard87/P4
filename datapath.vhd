@@ -109,7 +109,8 @@ architecture rtl of datapath is
 
     -- IF stage signals
     signal pc_reg        : unsigned(31 downto 0) := (others => '0'); -- Current PC.
-    signal pc_next       : unsigned(31 downto 0);
+    signal pc_next       : unsigned(31 downto 0); -- The next value of the PC. May be the value of
+                                                  -- of a branch destination or the next instr.
     signal pc_plus4      : unsigned(31 downto 0);
 
     signal imem_waitrequest : std_logic; -- Gets set to zero and back to one after a successful memory transaction.
@@ -142,8 +143,8 @@ architecture rtl of datapath is
     signal id_reg_write  : std_logic;
     signal id_mem_read   : std_logic;
     signal id_mem_write  : std_logic;
-    signal id_branch     : std_logic;
-    signal id_jump       : std_logic;
+    signal id_branch     : std_logic; -- Whether it's a branch instr or not.
+    signal id_jump       : std_logic; -- Whether it's a jump instr or not.
     signal id_is_jalr    : std_logic;
     signal id_alu_src    : std_logic;
     signal id_use_pc_a   : std_logic;   -- auipc: substitute PC for rs1
@@ -195,7 +196,7 @@ architecture rtl of datapath is
     -- Branch / jump target computation (dedicated adder)
     signal ex_branch_target : unsigned(31 downto 0);
     signal ex_jalr_target   : unsigned(31 downto 0);
-    signal ex_jump_target   : unsigned(31 downto 0);
+    signal ex_jump_target   : unsigned(31 downto 0); -- Target of jump instruction.
 
     -- Branch taken logic
     signal ex_branch_taken  : std_logic;
@@ -281,7 +282,13 @@ begin
     end process imem_read_proc;
 
     -- Data Memory (4 x 8-bit banks → 32-bit word)
-    dmem_addr <= to_integer(unsigned(exmem_alu_result(14 downto 0)));
+    -- Only present a meaningful address to data memory during load/store
+    -- operations. Otherwise, ALU results from unrelated instructions (for
+    -- example a negative SUB result) can alias into the RAM address port and
+    -- trip the memory model's bounds checks.
+    dmem_addr <= to_integer(unsigned(exmem_alu_result(14 downto 0)))
+                 when (exmem_mem_read = '1' or exmem_mem_write = '1')
+                 else 0;
     dmem_read <= exmem_mem_read;
 
     DMEM : memory
@@ -324,19 +331,23 @@ begin
         );
 
     -- Control Unit
+    -- The outputs of the control unit get pipelined from one stage to the other
+    -- until they reach the one in which they are relevant, where they get used.
+    -- Clearing an instruction also means clearing its associated registers.
     CU : control_unit
         port map (
-            instruction => ifid_instr,
+            instruction => ifid_instr, -- Instruction is provided here as input to
+                                       -- provide data for the control signals.
             reg_write   => id_reg_write,
             mem_read    => id_mem_read,
             mem_write   => id_mem_write,
-            branch      => id_branch,
-            jump        => id_jump,
+            branch      => id_branch, -- is it branch instruction?
+            jump        => id_jump, -- is it a jump instr. or a branch instr?
             is_jalr     => id_is_jalr,
             alu_src     => id_alu_src,
             use_pc_a    => id_use_pc_a,
             wb_src      => id_wb_src,
-            alu_ctrl    => id_alu_ctrl
+            alu_ctrl    => id_alu_ctrl -- alu operations for comparing.
         );
 
     -- Hazard Detection Unit
@@ -386,15 +397,20 @@ begin
     -- EX Stage: Branch decision
     -- ALU computed rs1 - rs2 (ALU_SUB). We inspect zero / negative flags.
     -- funct3 encoding:
-    --   000 = beq  → take if zero=1
-    --   001 = bne  → take if zero=0
-    --   100 = blt  → take if negative=1  (signed less-than)
-    --   101 = bge  → take if negative=0  (signed greater-or-equal)
+    --   000 = beq : take if zero=1
+    --   001 = bne : take if zero=0
+    --   100 = blt : take if negative=1  (signed less-than)
+    --   101 = bge : take if negative=0  (signed greater-or-equal)
+    -- This is from the fun3 heading of the RISC-V reference card. 
     branch_proc : process(idex_branch, idex_jump, idex_funct3, ex_zero, ex_negative)
         variable cond : boolean;
     begin
         cond := false;
         if idex_branch = '1' then
+            -- Check the values of func 3 in idex. Compare the ALU signal
+            -- which also gets evaluated in idex and the ALU op which is also
+            -- set in ex. The result of the ALU operation determines if we
+            -- take the branch or not.
             case idex_funct3 is
                 when "000" => cond := (ex_zero     = '1');   -- beq
                 when "001" => cond := (ex_zero     = '0');   -- bne
@@ -404,6 +420,8 @@ begin
             end case;
         end if;
         if cond or (idex_jump = '1') then
+            -- A jump instruction is like a branch instruction that we
+            -- always take.
             ex_branch_taken <= '1';
         else
             ex_branch_taken <= '0';
@@ -416,7 +434,8 @@ begin
     pc_plus4 <= pc_reg + 4;
 
     -- Branch/jump target comes from EX/MEM register (one cycle later than EX)
-    -- pc_src in EX/MEM decides whether to take the branch target or PC+4
+    -- pc_src in EX/MEM decides whether to take the branch target or PC+4 as usual.
+    -- This value will be applied to PC on the next clock signal.
     pc_next <= exmem_jump_target when exmem_pc_src = '1' else pc_plus4;
 
     pc_proc : process(clk)
@@ -476,7 +495,7 @@ begin
                 idex_alu_ctrl  <= ALU_ADD;
                 idex_funct3    <= "000";
                 idex_use_pc_a  <= '0';
-            elsif dmem_stall = '0' then
+            elsif dmem_stall = '0' then -- We keep moving if there is no stall.
                 idex_pc4       <= ifid_pc4;
                 idex_pc        <= ifid_pc4 - 4;   -- Recover the decoded instruction's PC from IF/ID PC+4
                 idex_rs1_data  <= id_rs1_data;
@@ -493,8 +512,10 @@ begin
                 idex_is_jalr   <= id_is_jalr;
                 idex_alu_src   <= id_alu_src;
                 idex_wb_src    <= id_wb_src;
-                idex_alu_ctrl  <= id_alu_ctrl;
-                idex_funct3    <= ifid_instr(14 downto 12);
+                idex_alu_ctrl  <= id_alu_ctrl; -- Set the ALU operation in execute so the signal
+                                               -- propagates through it.
+                idex_funct3    <= ifid_instr(14 downto 12); -- Whenever func3 is present,
+                                                            -- at these bits.
                 idex_use_pc_a  <= id_use_pc_a;
             end if;
         end if;
